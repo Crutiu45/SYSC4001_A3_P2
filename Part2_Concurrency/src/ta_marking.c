@@ -1,4 +1,3 @@
-
 #include "common.h"
 
 static void build_exam_filename(char *buf, size_t sz, int idx) {
@@ -181,6 +180,6 @@ int main(int argc, char *argv[]) {
     shmdt(shared);
     shmctl(shmid, IPC_RMID, NULL);
 
-    printf("All TAs finished (no synchronization, race conditions possible!)\n");
+    printf("All TAs are done with the papers\n");
     return 0;
 }
