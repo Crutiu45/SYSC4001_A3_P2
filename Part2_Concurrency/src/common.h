@@ -47,10 +47,4 @@ union semun {
     unsigned short  *array;
 };
 
-
-
-
-
-
-
 #endif

@@ -1,13 +1,15 @@
-(
-echo # Part 2 - TA Marking Concurrency
-echo.
-echo ## Compilation
-echo gcc -o ta_marking src/ta_marking.c
-echo gcc -o ta_marking_sync src/ta_marking_sync.c
-echo.
-echo ## Execution
-echo ./ta_marking 3
-echo ./ta_marking_sync 3
-echo.
-echo Where 3 is the number of TAs (processes^)
-) > README.md
+# How to Run C files
+
+Navigate into the "src" directory of Part2_Concurrency folder
+
+# Compile C files
+
+Compile ta_marking.c file: gcc -o ta_marking ta_marking.c
+
+Compile ta_marking_sync file: gcc -o ta_marking_sync ta_marking_sync.c
+
+# Run the C files
+
+Run ta_marking.c file: ./ta_marking 3
+
+Run ta_marking_sync file: ./ta_marking_sync 3
