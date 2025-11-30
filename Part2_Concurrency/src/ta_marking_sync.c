@@ -1,4 +1,3 @@
-// ta_marking_sync.c
 #include "common.h"
 
 int main(int argc, char *argv[]) {

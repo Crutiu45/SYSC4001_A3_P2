@@ -4,9 +4,9 @@ Navigate into the "src" directory of Part2_Concurrency folder
 
 # Compile C files
 
-Compile ta_marking.c file: gcc -o ta_marking ta_marking.c
+Compile ta_marking.c file: gcc -o ta_marking ta_marking.c helpers.c
 
-Compile ta_marking_sync file: gcc -o ta_marking_sync ta_marking_sync.c
+Compile ta_marking_sync file: gcc -o ta_marking_sync ta_marking_sync.c helpers.c
 
 # Run the C files
 
