@@ -1,85 +1,5 @@
+// ta_marking_sync.c
 #include "common.h"
-
-
-#define SEM_RUBRIC 0
-#define SEM_EXAM   1
-
-static void sem_wait_idx(int semid, int idx) {
-    struct sembuf sb = { idx, -1, 0 };
-    if (semop(semid, &sb, 1) == -1) {
-        perror("semop wait");
-    }
-}
-
-static void sem_signal_idx(int semid, int idx) {
-    struct sembuf sb = { idx, 1, 0 };
-    if (semop(semid, &sb, 1) == -1) {
-        perror("semop signal");
-    }
-}
-
-
-static void build_exam_filename(char *buf, size_t sz, int idx) {
-    if (idx == MAX_EXAMS - 1) {
-        snprintf(buf, sz, "../exam_files/exam_9999.txt");
-    } else {
-        snprintf(buf, sz, "../exam_files/exam_%04d.txt", idx + 1);
-    }
-}
-
-static int load_rubric(Rubric *rubric) {
-    FILE *f = fopen("../rubric.txt", "r");
-    if (!f) {
-        perror("fopen ../rubric.txt");
-        return -1;
-    }
-    for (int i = 0; i < NUM_QUESTIONS; ++i) {
-        if (!fgets(rubric->lines[i], RUBRIC_LINE_LEN, f)) {
-            rubric->lines[i][0] = '\0';
-        }
-    }
-    fclose(f);
-    return 0;
-}
-
-static int save_rubric(const Rubric *rubric) {
-    FILE *f = fopen("../rubric.txt", "w");
-    if (!f) {
-        perror("fopen ../rubric.txt for write");
-        return -1;
-    }
-    for (int i = 0; i < NUM_QUESTIONS; ++i) {
-        fputs(rubric->lines[i], f);
-        size_t len = strlen(rubric->lines[i]);
-        if (len == 0 || rubric->lines[i][len - 1] != '\n') {
-            fputc('\n', f);
-        }
-    }
-    fclose(f);
-    return 0;
-}
-
-static int load_exam(ExamState *exam, int idx) {
-    char filename[64];
-    build_exam_filename(filename, sizeof(filename), idx);
-
-    FILE *f = fopen(filename, "r");
-    if (!f) {
-        perror("fopen exam");
-        return -1;
-    }
-    if (fscanf(f, "%d", &exam->student_num) != 1) {
-        fprintf(stderr, "Failed to read student number from %s\n", filename);
-        fclose(f);
-        return -1;
-    }
-    for (int i = 0; i < NUM_QUESTIONS; ++i) {
-        exam->question_marked[i] = 0;
-    }
-    fclose(f);
-    return 0;
-}
-
 
 int main(int argc, char *argv[]) {
     if (argc != 2) {
@@ -88,153 +8,162 @@ int main(int argc, char *argv[]) {
     }
 
     int num_TAs = atoi(argv[1]);
-    if (num_TAs < 2 || num_TAs > MAX_TAS) {
-        printf("Number of TAs must be between 2 and %d\n", MAX_TAS);
+    if (num_TAs < 2) {
+        printf("Number of TAs must be at least 2\n");
         return 1;
     }
 
+    // Create shared memory
     int shmid = shmget(IPC_PRIVATE, sizeof(SharedData), IPC_CREAT | 0666);
-    if (shmid == -1) {
+    if (shmid < 0) {
         perror("shmget");
-        return 1;
+        exit(1);
     }
 
     SharedData *shared = (SharedData *)shmat(shmid, NULL, 0);
     if (shared == (void *)-1) {
         perror("shmat");
-        return 1;
+        exit(1);
     }
 
-    if (load_rubric(&shared->rubric) != 0) {
-        return 1;
-    }
+    // Initialize shared memory
     shared->current_exam_index = 0;
-    shared->done = 0;
+    shared->rubric_version = 0;
+    shared->reader_count = 0;
+    read_rubric_from_file(shared->rubric);
 
-    if (load_exam(&shared->exam, shared->current_exam_index) != 0) {
-        return 1;
-    }
-    if (shared->exam.student_num == 9999) {
-        shared->done = 1;
-    }
-
-    int semid = semget(IPC_PRIVATE, 2, IPC_CREAT | 0666);
-    if (semid == -1) {
+    // Create semaphore set
+    int semid = semget(IPC_PRIVATE, NUM_SEMS, IPC_CREAT | 0666);
+    if (semid < 0) {
         perror("semget");
-        return 1;
-    }
-    union semun arg;
-    unsigned short values[2] = {1, 1};
-    arg.array = values;
-    if (semctl(semid, 0, SETALL, arg) == -1) {
-        perror("semctl SETALL");
-        return 1;
+        exit(1);
     }
 
-    for (int i = 0; i < num_TAs; ++i) {
+    // Initialize semaphores
+    semctl(semid, SEM_EXAM_PILE,    SETVAL, 1);  // exam pile mutex
+    semctl(semid, SEM_RUBRIC_WRITE, SETVAL, 1);  // rubric writer lock
+    semctl(semid, SEM_READER_COUNT, SETVAL, 1);  // reader_count lock
+
+    printf("=== Part 2.b: TA Marking WITH Synchronization ===\n");
+    printf("Starting %d TAs with semaphore protection.\n\n", num_TAs);
+
+    // Fork TA processes
+    for (int ta_id = 0; ta_id < num_TAs; ta_id++) {
         pid_t pid = fork();
         if (pid < 0) {
             perror("fork");
-            return 1;
+            exit(1);
         }
-        if (pid == 0) {
-            int ta_id = i + 1;
-            srand(time(NULL) ^ getpid());
+
+        if (pid == 0) { // Child TA process
+            srand(time(NULL) ^ (getpid() << 16));
 
             while (1) {
-                if (shared->done) {
+                // Synchronized access to shared exam index
+                sem_wait_op(semid, SEM_EXAM_PILE);
+                int exam_index = shared->current_exam_index++;
+                sem_signal_op(semid, SEM_EXAM_PILE);
+
+                // 20 regular exams + 1 termination exam
+                if (exam_index >= NUM_EXAMS + 1) {
                     break;
                 }
 
-                int student;
-                sem_wait_idx(semid, SEM_EXAM);
-                student = shared->exam.student_num;
-                sem_signal_idx(semid, SEM_EXAM);
-
-                for (int q = 0; q < NUM_QUESTIONS; ++q) {
-                    int ms = 500 + rand() % 501;
-                    usleep(ms * 1000);
-
-                    if (rand() % 2 == 0) {
-                        sem_wait_idx(semid, SEM_RUBRIC);
-                        char *line = shared->rubric.lines[q];
-                        char *comma = strchr(line, ',');
-                        if (comma && comma[1] != '\0' && comma[1] != '\n') {
-                            comma[1] = comma[1] + 1;
-                            save_rubric(&shared->rubric);
-                            printf("TA %d [PID %d] safely updated rubric line %d\n",
-                                   ta_id, getpid(), q + 1);
-                        }
-                        sem_signal_idx(semid, SEM_RUBRIC);
-                    }
+                // Build exam filename
+                char exam_filename[128];
+                if (exam_index < NUM_EXAMS) {
+                    sprintf(exam_filename, "../exam_files/exam_%04d.txt",
+                            exam_index + 1);
+                } else {
+                    sprintf(exam_filename, "../exam_files/exam_9999.txt");
                 }
 
-                while (1) {
-                    int chosen_q = -1;
-
-                    sem_wait_idx(semid, SEM_EXAM);
-                    if (shared->exam.student_num == 9999) {
-                        shared->done = 1;
-                        sem_signal_idx(semid, SEM_EXAM);
-                        break;
-                    }
-
-                    for (int q = 0; q < NUM_QUESTIONS; ++q) {
-                        if (shared->exam.question_marked[q] == 0) {
-                            shared->exam.question_marked[q] = 1;
-                            chosen_q = q;
-                            break;
-                        }
-                    }
-                    sem_signal_idx(semid, SEM_EXAM);
-
-                    if (chosen_q == -1) {
-                        sem_wait_idx(semid, SEM_EXAM);
-                        int all_marked = 1;
-                        for (int q = 0; q < NUM_QUESTIONS; ++q) {
-                            if (shared->exam.question_marked[q] == 0) {
-                                all_marked = 0;
-                                break;
-                            }
-                        }
-                        if (all_marked && !shared->done) {
-                            shared->current_exam_index++;
-                            if (shared->current_exam_index >= MAX_EXAMS ||
-                                load_exam(&shared->exam,
-                                          shared->current_exam_index) != 0) {
-                                shared->done = 1;
-                            } else if (shared->exam.student_num == 9999) {
-                                shared->done = 1;
-                            }
-                        }
-                        sem_signal_idx(semid, SEM_EXAM);
-
-                        break; 
-                    }
-
-                    int ms2 = 1000 + rand() % 1001;
-                    usleep(ms2 * 1000);
-                    printf("TA %d [PID %d] (sync) marked student %04d question %d\n",
-                           ta_id, getpid(), student, chosen_q + 1);
+                // Open exam file
+                FILE *exam_file = fopen(exam_filename, "r+");
+                if (!exam_file) {
+                    fprintf(stderr,
+                            "TA %d [PID %d] failed to open %s\n",
+                            ta_id + 1, getpid(), exam_filename);
+                    continue;
                 }
 
-                if (shared->done) {
-                    break;
+                char student_num[16];
+                if (fgets(student_num, sizeof(student_num), exam_file) == NULL) {
+                    fclose(exam_file);
+                    continue;
+                }
+                student_num[strcspn(student_num, "\n")] = 0;
+
+                // Random exercise 1–5
+                int exercise_to_mark = (rand() % NUM_EXERCISES) + 1;
+
+                printf("TA %d [PID %d] marking EXAM: %s (Student %s) - Exercise %d\n",
+                       ta_id + 1, getpid(), exam_filename, student_num,
+                       exercise_to_mark);
+
+                // Readers–writers: start reading rubric
+                start_reading(semid, shared);
+                printf("TA %d [PID %d] reading rubric for exercise %d: %s\n",
+                       ta_id + 1, getpid(), exercise_to_mark,
+                       shared->rubric[exercise_to_mark - 1]);
+                usleep(500000 + (rand() % 500000)); // 0.5–1.0 s read time
+                end_reading(semid, shared);
+
+                // Simulate marking time
+                usleep(500000 + (rand() % 1000000)); // 0.5–1.5 s
+
+                // Append mark to exam file
+                fseek(exam_file, 0, SEEK_END);
+                fprintf(exam_file,
+                        "Exercise %d: Marked by TA %d (PID %d)\n",
+                        exercise_to_mark, ta_id + 1, getpid());
+                fclose(exam_file);
+
+                // Random chance to modify rubric (20%)
+                if ((rand() % 100) < 20) {
+                    printf("TA %d [PID %d] wants to modify rubric...\n",
+                           ta_id + 1, getpid());
+
+                    int rubric_line = rand() % NUM_EXERCISES;
+
+                    // Exclusive writer access
+                    start_writing(semid);
+                    printf("TA %d [PID %d] modifying rubric line %d (exercise %d)...\n",
+                           ta_id + 1, getpid(), rubric_line + 1, rubric_line + 1);
+
+                    modify_rubric(shared, rubric_line);
+
+                    sleep(3); // simulate ~3 s modification time
+                    end_writing(semid);
+
+                    printf("TA %d [PID %d] finished modifying rubric.\n",
+                           ta_id + 1, getpid());
+                }
+
+                // Termination exam
+                if (atoi(student_num) == TERMINATION_EXAM) {
+                    printf("TA %d [PID %d] reached termination exam (9999), exiting.\n",
+                           ta_id + 1, getpid());
+                    shmdt(shared);
+                    exit(0);
                 }
             }
 
-            printf("TA %d [PID %d] exiting (sync).\n", ta_id, getpid());
-            _exit(0);
+            shmdt(shared);
+            exit(0);
         }
     }
 
+    // Parent waits for all TAs
     while (wait(NULL) > 0)
         ;
 
+    printf("\nAll TAs finished (synchronized using semaphores for rubric readers/writers!)\n");
+
+    // Cleanup
     shmdt(shared);
     shmctl(shmid, IPC_RMID, NULL);
-    semctl(semid, 0, IPC_RMID);
+    semctl(semid, 0, IPC_RMID, 0);
 
-    printf("All TAs finished (synchronized using semaphores!)\n");
     return 0;
 }

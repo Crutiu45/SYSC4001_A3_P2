@@ -1,0 +1,18 @@
+Experiment setup
+o	Ran the unsynchronized version ta_marking with 3 TAs using the shared exam files exam_0001.txt–exam_0020.txt plus exam_9999.txt as the termination exam.
+o	Ran the synchronized version ta_marking_sync with the same number of TAs and the same input files.
+o	All runs used the rubric file rubric.txt with five lines in the format exercise,letter (e.g., 1,A … 5,E).
+Observations for Part 2.a (ta_marking – no synchronization)
+o	Each TA process reads and updates a shared exam index without any locking, so access to the “pile of exams” is not mutually exclusive.
+o	In some runs, different TAs printed messages showing they were marking the same exam file, which means an exam could be processed more than once or out of order.
+o	Rubric modifications are also unsynchronized: multiple TAs may decide to change the rubric at almost the same time, which can cause lost updates or non-repeatable final rubric contents.
+o	Despite these race conditions, all TAs eventually reached the termination exam (student 9999) and exited; no obvious deadlock or livelock was observed in the tests.
+Observations for Part 2.b (ta_marking_sync – with semaphores and shared memory)
+o	Access to the shared exam index is protected by a semaphore, so each exam number is assigned to exactly one TA; no duplicate exam processing was seen.
+o	Rubric access uses a readers–writers style protocol: several TAs can read the rubric concurrently, but only one TA at a time can enter the critical section that updates the rubric.
+o	Rubric changes appear in a consistent sequence, and the final rubric file reflects all committed updates with no visible corruption.
+o	All TAs again reached the termination exam and exited normally; no deadlock or livelock occurred in the synchronized version.
+Deadlock / livelock discussion and relation to critical sections
+o	In Part 2.a, race conditions are present but there are no blocking primitives, so deadlock is unlikely; progress is not coordinated, and results are inconsistent.
+o	In Part 2.b, mutual exclusion is enforced for both exam selection and rubric writing, and the locking order prevents circular wait, so neither deadlock nor livelock was observed.
+o	The synchronized design satisfies the three critical-section requirements more closely: it enforces mutual exclusion, allows processes to make progress, and avoids unbounded waiting in the tested scenarios.

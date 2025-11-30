@@ -1,66 +1,5 @@
+// ta_marking.c
 #include "common.h"
-
-static void build_exam_filename(char *buf, size_t sz, int idx) {
-    if (idx == MAX_EXAMS - 1) {
-        snprintf(buf, sz, "../exam_files/exam_9999.txt");
-    } else {
-        snprintf(buf, sz, "../exam_files/exam_%04d.txt", idx + 1);
-    }
-}
-
-static int load_rubric(Rubric *rubric) {
-    FILE *f = fopen("../rubric.txt", "r");
-    if (!f) {
-        perror("fopen ../rubric.txt");
-        return -1;
-    }
-    for (int i = 0; i < NUM_QUESTIONS; ++i) {
-        if (!fgets(rubric->lines[i], RUBRIC_LINE_LEN, f)) {
-            rubric->lines[i][0] = '\0';
-        }
-    }
-    fclose(f);
-    return 0;
-}
-
-static int save_rubric(const Rubric *rubric) {
-    FILE *f = fopen("../rubric.txt", "w");
-    if (!f) {
-        perror("fopen ../rubric.txt for write");
-        return -1;
-    }
-    for (int i = 0; i < NUM_QUESTIONS; ++i) {
-        fputs(rubric->lines[i], f);
-        size_t len = strlen(rubric->lines[i]);
-        if (len == 0 || rubric->lines[i][len - 1] != '\n') {
-            fputc('\n', f);
-        }
-    }
-    fclose(f);
-    return 0;
-}
-
-static int load_exam(ExamState *exam, int idx) {
-    char filename[64];
-    build_exam_filename(filename, sizeof(filename), idx);
-
-    FILE *f = fopen(filename, "r");
-    if (!f) {
-        perror("fopen exam");
-        return -1;
-    }
-    if (fscanf(f, "%d", &exam->student_num) != 1) {
-        fprintf(stderr, "Failed to read student number from %s\n", filename);
-        fclose(f);
-        return -1;
-    }
-    for (int i = 0; i < NUM_QUESTIONS; ++i) {
-        exam->question_marked[i] = 0;
-    }
-    fclose(f);
-    return 0;
-}
-
 
 int main(int argc, char *argv[]) {
     if (argc != 2) {
@@ -69,117 +8,139 @@ int main(int argc, char *argv[]) {
     }
 
     int num_TAs = atoi(argv[1]);
-    if (num_TAs < 2 || num_TAs > MAX_TAS) {
-        printf("Number of TAs must be between 2 and %d\n", MAX_TAS);
+    if (num_TAs < 2) {
+        printf("Number of TAs must be at least 2\n");
         return 1;
     }
 
+    // Create shared memory
     int shmid = shmget(IPC_PRIVATE, sizeof(SharedData), IPC_CREAT | 0666);
-    if (shmid == -1) {
+    if (shmid < 0) {
         perror("shmget");
-        return 1;
+        exit(1);
     }
 
     SharedData *shared = (SharedData *)shmat(shmid, NULL, 0);
     if (shared == (void *)-1) {
         perror("shmat");
-        return 1;
+        exit(1);
     }
 
-    if (load_rubric(&shared->rubric) != 0) {
-        return 1;
-    }
+    // Initialize shared memory
     shared->current_exam_index = 0;
-    shared->done = 0;
+    shared->rubric_version = 0;
+    shared->reader_count = 0;  // not used here but kept consistent
+    read_rubric_from_file(shared->rubric);
 
-    if (load_exam(&shared->exam, shared->current_exam_index) != 0) {
-        return 1;
-    }
-    if (shared->exam.student_num == 9999) {
-        shared->done = 1;
-    }
+    printf("=== Part 2.a: TA Marking Without Synchronization ===\n");
+    printf("Starting %d TAs. Race conditions possible!\n\n", num_TAs);
 
-    for (int i = 0; i < num_TAs; ++i) {
+    // Fork TA processes
+    for (int ta_id = 0; ta_id < num_TAs; ta_id++) {
         pid_t pid = fork();
         if (pid < 0) {
             perror("fork");
-            return 1;
+            exit(1);
         }
-        if (pid == 0) {
-            //Child TA process
-            int ta_id = i + 1;
-            srand(time(NULL) ^ getpid());
 
-            while (!shared->done) {
-                int student = shared->exam.student_num;
+        if (pid == 0) { // Child TA process
+            srand(time(NULL) ^ (getpid() << 16));
 
-                for (int q = 0; q < NUM_QUESTIONS; ++q) {
-                    int ms = 500 + rand() % 501;
-                    usleep(ms * 1000);
+            while (1) {
+                // Pick an exam from shared pile (NO SYNCHRONIZATION)
+                int exam_index = shared->current_exam_index++;
 
-                    
-                    if (rand() % 2 == 0) {
-                        char *line = shared->rubric.lines[q];
-                        char *comma = strchr(line, ',');
-                        if (comma && comma[1] != '\0' && comma[1] != '\n') {
-                            comma[1] = comma[1] + 1;
-                            save_rubric(&shared->rubric);
-                            printf("TA %d [PID %d] updated rubric line %d\n",
-                                   ta_id, getpid(), q + 1);
-                        }
-                    }
-                }
-
-                while (1) {
-                    int chosen_q = -1;
-                    for (int q = 0; q < NUM_QUESTIONS; ++q) {
-                        if (shared->exam.question_marked[q] == 0) {
-                            shared->exam.question_marked[q] = 1;
-                            chosen_q = q;
-                            break;
-                        }
-                    }
-
-                    if (chosen_q == -1) {
-                        break;
-                    }
-
-                    int ms2 = 1000 + rand() % 1001; 
-                    usleep(ms2 * 1000);
-                    printf("TA %d [PID %d] marked student %04d question %d\n",
-                           ta_id, getpid(), student, chosen_q + 1);
-                }
-
-                if (shared->exam.student_num == 9999) {
-                    shared->done = 1;
+                // 20 regular exams + 1 termination exam
+                if (exam_index >= NUM_EXAMS + 1) {
                     break;
                 }
 
-                shared->current_exam_index++;
-                if (shared->current_exam_index >= MAX_EXAMS) {
-                    shared->done = 1;
-                    break;
+                // Build exam filename
+                char exam_filename[128];
+                if (exam_index < NUM_EXAMS) {
+                    sprintf(exam_filename, "../exam_files/exam_%04d.txt",
+                            exam_index + 1);
+                } else {
+                    sprintf(exam_filename, "../exam_files/exam_9999.txt");
                 }
-                if (load_exam(&shared->exam, shared->current_exam_index) != 0) {
-                    shared->done = 1;
-                    break;
+
+                // Open and read exam file
+                FILE *exam_file = fopen(exam_filename, "r+");
+                if (!exam_file) {
+                    fprintf(stderr,
+                            "TA %d [PID %d] failed to open %s\n",
+                            ta_id + 1, getpid(), exam_filename);
+                    continue;
                 }
-                if (shared->exam.student_num == 9999) {
-                    shared->done = 1;
+
+                char student_num[16];
+                if (fgets(student_num, sizeof(student_num), exam_file) == NULL) {
+                    fclose(exam_file);
+                    continue;
+                }
+                student_num[strcspn(student_num, "\n")] = 0;
+
+                // Pick a random exercise to mark (1–5)
+                int exercise_to_mark = (rand() % NUM_EXERCISES) + 1;
+
+                printf("TA %d [PID %d] marking EXAM: %s (Student %s) - Exercise %d\n",
+                       ta_id + 1, getpid(), exam_filename, student_num,
+                       exercise_to_mark);
+
+                // Read rubric for this exercise
+                printf("TA %d [PID %d] reading rubric for exercise %d: %s\n",
+                       ta_id + 1, getpid(), exercise_to_mark,
+                       shared->rubric[exercise_to_mark - 1]);
+
+                // Simulate marking time (~0.5–1.5 seconds)
+                usleep(500000 + (rand() % 1000000));
+
+                // Append mark to exam file
+                fseek(exam_file, 0, SEEK_END);
+                fprintf(exam_file,
+                        "Exercise %d: Marked by TA %d (PID %d)\n",
+                        exercise_to_mark, ta_id + 1, getpid());
+                fclose(exam_file);
+
+                // Random chance to modify rubric (20%)
+                if ((rand() % 100) < 20) {
+                    printf("TA %d [PID %d] wants to modify rubric...\n",
+                           ta_id + 1, getpid());
+
+                    int rubric_line = rand() % NUM_EXERCISES;
+                    printf("TA %d [PID %d] modifying rubric line %d (exercise %d)...\n",
+                           ta_id + 1, getpid(), rubric_line + 1, rubric_line + 1);
+
+                    // No synchronization in part 2.a
+                    modify_rubric(shared, rubric_line);
+
+                    // Simulate modification time (~3 seconds)
+                    sleep(3);
+                }
+
+                // Termination exam
+                if (atoi(student_num) == TERMINATION_EXAM) {
+                    printf("TA %d [PID %d] reached termination exam (9999), exiting.\n",
+                           ta_id + 1, getpid());
+                    shmdt(shared);
+                    exit(0);
                 }
             }
 
-            printf("TA %d [PID %d] exiting (part 2a).\n", ta_id, getpid());
-            _exit(0);
+            shmdt(shared);
+            exit(0);
         }
     }
 
+    // Parent waits for all TAs
     while (wait(NULL) > 0)
         ;
 
+    printf("\nAll TAs finished\n");
+
+    // Cleanup
     shmdt(shared);
     shmctl(shmid, IPC_RMID, NULL);
 
-    printf("All TAs are done with the papers\n");
     return 0;
 }
