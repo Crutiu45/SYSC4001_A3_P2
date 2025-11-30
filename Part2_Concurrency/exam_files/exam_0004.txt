@@ -1,2 +1,4 @@
 0004Exercise 4: Marked by TA 1 (PID 4393)
 Exercise 5: Marked by TA 2 (PID 4415)
+Exercise 2: Marked by TA 2 (PID 439)
+Exercise 3: Marked by TA 2 (PID 442)
