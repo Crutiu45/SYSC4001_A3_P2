@@ -27,6 +27,4 @@ To run different test cases change the number of TA processes
 3. Run with 5 TAs 
 ./ta_marking 5 ,  ./ta_marking_sync 5
 
-Expected Results:
-- Part 2.a: Shows race conditions (same exams processed multiple times)
-- Part 2.b: No race conditions; orderly execution with synchronization
+
