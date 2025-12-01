@@ -27,3 +27,7 @@ To run different test cases change the number of TA processes
 3. Run with 5 TAs 
 ./ta_marking 5 ,  ./ta_marking_sync_101195158_101294948 5
 
+<<<<<<< HEAD
+=======
+
+>>>>>>> 50dccbffd96ca057d667f191915cd9eaa6842e59
