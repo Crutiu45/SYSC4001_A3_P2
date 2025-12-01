@@ -2,3 +2,7 @@
 Exercise 5: Marked by TA 3 (PID 4416)
 Exercise 1: Marked by TA 1 (PID 438)
 Exercise 1: Marked by TA 1 (PID 441)
+Exercise 2: Marked by TA 3 (PID 450)
+Exercise 2: Marked by TA 3 (PID 454)
+Exercise 1: Marked by TA 1 (PID 458)
+Exercise 5: Marked by TA 1 (PID 463)
